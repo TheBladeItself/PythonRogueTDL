@@ -1,6 +1,7 @@
 # PythonRogueTDL
 
 Requires:
+* python 3
 * tdl
 
 How to install tdl for python 3:
