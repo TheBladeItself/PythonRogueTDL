@@ -3,39 +3,49 @@ from random import randint
 import tcod.color as colours
 import math
 import textwrap
+from tcod import image_load
 
+# Actual size of window
 SCREEN_WIDTH		= 80
 SCREEN_HEIGHT		= 50
+
+# Size of the map
 MAP_WIDTH			= 80
 MAP_HEIGHT			= 43
 
+# GUI sizes and co-ordinates
 BAR_WIDTH			= 20
 PANEL_HEIGHT		= 7
 PANEL_Y				= SCREEN_HEIGHT - PANEL_HEIGHT
-
 MSG_X				= BAR_WIDTH + 2
 MSG_WIDTH			= SCREEN_WIDTH - BAR_WIDTH - 2
 MSG_HEIGHT			= PANEL_HEIGHT - 1
+INVENTORY_WIDTH		= 50
 
+# Parameters for dungeon Generation
 ROOM_MAX_SIZE		= 10
 ROOM_MIN_SIZE		= 6
 MAX_ROOMS			= 30
 MAX_ROOM_MONSTERS	= 3
+MAX_ROOM_ITEMS		= 2
 
 FOV_ALGO			= 'BASIC'	# default FOV algorithm
 FOV_LIGHT_WALLS		= True
 TORCH_RADIUS		= 10
 
-CLASSIC_TILES		= False
+# Spell Values
+HEAL_AMOUNT			= 4
+LIGHTNING_RANGE		= 5
+LIGHTNING_DAMAGE	= 20
+CONFUSE_RANGE		= 8
+CONFUSE_NUM_TURNS	= 10
+
+CLASSIC_TILES		= False		# Classic Tiles is not fully implemented yet
 
 col_dark_wall		= (0, 0, 100)
 col_ligt_wall		= (130, 110, 50)
 col_dark_grnd		= (50, 50, 150)
 col_ligt_grnd		= (200, 180, 50)
-
-col_black			= (0, 0, 0)
-col_white			= (255, 255, 255)
-col_grey			= (200, 100, 25)
 
 class Tile():
 	# Map Tile & its properties
@@ -68,7 +78,7 @@ class Rect():
 class GameObject:
 	# This represents a generic object - it's always represented by a
 	# character on screen
-	def __init__(self, x, y, char, name, colour, blocks=False, fighter=None, ai=None):
+	def __init__(self, x, y, char, name, colour, blocks=False, fighter=None, ai=None, item=None):
 		self.x = x
 		self.y = y
 		self.char = char
@@ -81,6 +91,9 @@ class GameObject:
 		
 		self.ai = ai
 		if self.ai: self.ai.owner = self
+		
+		self.item = item
+		if self.item: self.item.owner = self
 		
 	def move(self, dx, dy):
 		# Move by the amount given
@@ -116,11 +129,13 @@ class GameObject:
 		dy = other.y - self.y
 		return math.sqrt(dx ** 2 + dy ** 2)
 		
+	def distance(self, x, y):
+		return math.sqrt((x - self.x) ** 2 + (y - self.y) ** 2)
+		
 	def send_to_back(self):
 		global objects
 		objects.remove(self)
 		objects.insert(0, self)
-
 
 class Fighter:
 	def __init__(self, hp, defense, power, death_function=None):
@@ -146,6 +161,36 @@ class Fighter:
 			target.fighter.take_damage(damage)
 		else:
 			print(self.owner.name.capitalize() + ' attacks ' + target.name + ' but it has no effect!') 
+	
+	def heal(self, amount):
+		self.hp += amount
+		if self.hp > self.max_hp: self.hp = self.max_hp
+	
+class Item:
+	def __init__(self, use_function=None):
+		self.use_function = use_function
+	
+	def pick_up(self):
+		if len(inventory) >= 26:
+			message('Your inventory is full, cannot pick up ' + self.owner.name + '.', colours.red)
+		else:
+			inventory.append(self.owner)
+			objects.remove(self.owner)
+			message('You picked up a ' + self.owner.name + '!', colours.green)
+		
+	def drop(self):
+		objects.append(self.owner)
+		inventory.remove(self.owner)
+		self.owner.x = player.x
+		self.owner.y = player.y
+		message('You dropped a ' + self.owner.name + '.', colours.yellow)
+			
+	def use(self):
+		if self.use_function is None:
+			message('The ' + self.owner.name + ' cannot be used')
+		else:
+			if self.use_function() != 'cancelled':
+				inventory.remove(self.owner)	# Destroy after use, unless cancelled
 		
 class BasicMonster:
 	def take_turn(self):
@@ -157,6 +202,20 @@ class BasicMonster:
 			
 			# Attack!
 			elif player.fighter.hp > 0: monster.fighter.attack(player)
+
+class ConfusedMonster:
+	def __init__(self, old_ai, num_turns=CONFUSE_NUM_TURNS):
+		self.old_ai = old_ai
+		self.num_turns = num_turns
+	
+	def take_turn(self):
+		if self.num_turns > 0:
+			# Move Randomly
+			self.owner.move(randint(-1, 1), randint(-1, 1))
+			self.num_turns -= 1
+		else: # Restore old AI
+			self.owner.ai = self.old.ai
+			message('The ' + self.owner.name + ' is no longer confused!', colours.red)
 
 def is_blocked(x, y):
 	# Test the map tile
@@ -202,7 +261,9 @@ def is_visible_tile(x, y):
 		return True
 
 def make_map():
-	global my_map
+	global my_map, objects
+	
+	objects = [player]
 	
 	# fill map with 'blocked' tiles
 	my_map = [[ Tile(True)	for y in range(MAP_HEIGHT)] for x in range(MAP_WIDTH)]
@@ -262,8 +323,8 @@ def place_objects(room):
 	num_monsters = randint(0, MAX_ROOM_MONSTERS)
 	
 	for i in range(num_monsters):
-		x = randint(room.x1, room.x2)
-		y = randint(room.y1, room.y2)
+		x = randint(room.x1+1, room.x2-1)
+		y = randint(room.y1+1, room.y2-1)
 		
 		if not is_blocked(x, y):
 			if randint(0, 100) < 80:
@@ -280,6 +341,34 @@ def place_objects(room):
 					blocks=True, fighter=fighter_component, ai=ai_component)		
 			
 			objects.append(monster)
+		
+	num_items = randint(0, MAX_ROOM_ITEMS)
+	
+	for i in range(num_items):
+		x = randint(room.x1+1, room.x2-1)
+		y = randint(room.y1+1, room.y2-1)
+		
+		if not is_blocked(x, y):
+			dice = randint(0, 100)
+			if dice < 70: # Healing Potion
+				item_component = Item(use_function=cast_heal)
+				item = GameObject(x, y, '!', 'healing potion', colours.violet,
+					item=item_component)
+			elif dice < 70+10: # Lightning Rune
+				item_component = Item(use_function=cast_lightning)
+				item = GameObject(x, y, '#', 'lightning rune', colours.light_yellow,
+					item=item_component)
+			elif dice < 70+10+10: # Fireball Rune
+				item_component = Item(use_function=cast_fireball)
+				item = GameObject(x, y, '#', 'fireball rune', colours.light_yellow,
+					item=item_component)
+			else: # Confuse Rune
+				item_component = Item(use_function=cast_confuse)
+				item = GameObject(x, y, '#', 'confusion rune', colours.light_yellow,
+					item=item_component)
+				
+			objects.append(item)
+			item.send_to_back()
 
 def render_all():
 	global fov_recompute
@@ -358,6 +447,94 @@ def player_move_or_attack(dx, dy):
 		player.move(dx, dy)
 		fov_recompute = True	
 	
+def menu(header, options, width):
+	if len(options) > 26:
+		raise ValueError('Cannot have a menu with more than 26 options.')
+	
+	# Calculate the total height for the header (after textwrap) with one line per option
+	header_wrapped = []
+	for header_line in header.splitlines():
+		header_wrapped.extend(textwrap.wrap(header_line, width))
+	header_height = len(header_wrapped)
+	if header == '': header_height = 0
+	height = len(options) + header_height
+	
+	# Create an off-screen console that represents the menu's window
+	window = tdl.Console(width, height)
+	
+	# Print the header, with wrapped text
+	window.draw_rect(0, 0, width, height, None, fg=colours.white, bg=None)
+	for i, line in enumerate(header_wrapped):
+		window.draw_str(0, 0+i, header_wrapped[i])
+	
+	# Print all of the Options
+	y = header_height
+	letter_index = ord('a')
+	for option_text in options:
+		text = '(' + chr(letter_index) + ') ' + option_text
+		window.draw_str(0, y, text, bg=None)
+		y += 1
+		letter_index += 1
+		
+	# Blit the contents of "window" to the root console
+	x = SCREEN_WIDTH//2 - width//2
+	y = SCREEN_HEIGHT//2 - height//2
+	root.blit(window, x, y, width, height, 0, 0)
+	
+	#present the root console to the player and wait for a key-press
+	tdl.flush()
+	key = tdl.event.key_wait()
+	key_char = key.char
+	if key_char == '': key_char = ' ' # placeholder
+ 
+    #convert the ASCII code to an index; if it corresponds to an option, return it
+	index = ord(key_char) - ord('a')
+	if index >= 0 and index < len(options): return index
+	return None
+
+def msgbox(text, width=50):
+	menu(text, [], width) 
+	
+def inventory_menu(header):
+	if len(inventory) == 0:
+		options = ['Your inventory is empty.']
+	else:
+		options = [item.name for item in inventory]
+	index = menu(header, options, INVENTORY_WIDTH)
+	
+	# If an item was chosen, return it
+	if index is None or len(inventory) == 0: return None
+	return inventory[index].item
+	
+def main_menu():
+	img = image_load('menu_background.png')
+	
+	while not tdl.event.is_window_closed():
+		img.blit_2x(root, 0, 0)	# Blit the image, at twice the regular console resolution
+		
+		# Game Title and Credits
+		title = 'THE ABYSS'
+		centre = (SCREEN_WIDTH - len(title)) // 2
+		root.draw_str(centre, SCREEN_HEIGHT // 2 -4, title, bg=None, fg=colours.light_yellow)
+		
+		title = 'by Edward Powell'
+		centre = (SCREEN_WIDTH - len(title)) // 2
+		root.draw_str(centre, SCREEN_HEIGHT-2, title, bg=None, fg=colours.light_yellow)
+		
+		# Show options
+		choice = menu('', ['Play a new game', 'Continue last game', 'Quit'], 24)
+		
+		if choice == 0:
+			new_game()
+			play_game()
+		if choice == 1:  #load last game
+			try: load_game()
+			except:
+				msgbox('\n No saved game to load.\n', 24)
+				continue
+			play_game()
+		elif choice == 2: break
+	
 def handle_keys():
 	global playerx, playery
 	global fov_recompute
@@ -386,7 +563,22 @@ def handle_keys():
 		elif user_input.key == 'DOWN': player_move_or_attack(0, 1)
 		elif user_input.key == 'LEFT': player_move_or_attack(-1, 0)
 		elif user_input.key == 'RIGHT':	player_move_or_attack(1, 0)
-		else: return 'didnt-take-turn'
+		else: # test for other keys
+			if user_input.text == 'g': # Pick up an item
+				for obj in objects:
+					if obj.x == player.x and obj.y == player.y and obj.item:
+						obj.item.pick_up()
+						break 
+			if user_input.text == 'i': # Show the Inventory
+				chosen_item = inventory_menu('Press the key next to an item to use it, or any other to cancel.\n')
+				if chosen_item is not None: chosen_item.use()
+			if user_input.text == 'd':
+				#show the inventory; if an item is selected, drop it
+				chosen_item = inventory_menu('Press the key next to an item to' + 
+				'drop it, or any other to cancel.\n')
+				if chosen_item is not None:
+					chosen_item.drop()
+			return 'didnt-take-turn'
 
 def player_death(player):
 	global game_state
@@ -437,50 +629,169 @@ def get_names_under_mouse():
 	names = ', '.join(names)  #join the names, separated by commas
 	return names.capitalize()
 
+def closest_monster(max_range):
+	closest_enemy = None
+	closest_dist = max_range + 1
+	
+	for obj in objects:
+		if obj.fighter and not obj == player and (obj.x, obj.y) in visible_tiles:
+			dist = player.distance_to(obj)
+			if dist < closest_dist:
+				closest_enemy = obj
+				closest_dist = dist
+	return closest_enemy
+
+def target_tile(max_range=None):
+	global mouse_coord
+	
+	while True:
+		tdl.flush()
+		clicked = False
+		for event in tdl.event.get():
+			if event.type == 'MOUSEMOTION': mouse_coord = event.cell
+			if event.type == 'MOUSEDOWN': clicked = True
+			elif ((event.type == 'MOUSEDOWN' and event.button == 'RIGHT') or 
+					(event.type == 'KEYDOWN' and event.key == 'ESCAPE')):
+				return (None, None)
+		render_all()
+		
+		x = mouse_coord[0]
+		y = mouse_coord[1]
+		if (clicked and mouse_coord in visible_tiles and
+			(max_range is None or player.distance(x, y) <= max_range)):
+			return mouse_coord
+
+def target_monster(max_range=None):
+	while True:
+		(x, y) = target_tile(max_range)
+		if x is None:  #player cancelled
+			return None
+ 
+		#return the first clicked monster, otherwise continue looping
+		for obj in objects:
+			if obj.x == x and obj.y == y and obj.fighter and obj != player:
+				return obj
+
+def cast_heal(): #heal the player
+	if player.fighter.hp == player.fighter.max_hp:
+		message('You are already at full health.', colours.red)
+		return 'cancelled'
+ 
+	message('Your wounds start to mend!', colours.light_violet)
+	player.fighter.heal(HEAL_AMOUNT)
+
+def cast_lightning():
+	# Find closest enemy inside a maximum range and damage it
+	monster = closest_monster(LIGHTNING_RANGE)
+	if monster is None:
+		message('No enemy is close enough to strike.', colours.red)
+		return 'cancelled'
+ 
+	# Strike it!
+	message('A lighting bolt strikes the ' + monster.name + ' with a loud thunder! The damage is '
+		+ str(LIGHTNING_DAMAGE) + ' hit points.', colours.light_blue)
+	monster.fighter.take_damage(LIGHTNING_DAMAGE)
+
+def cast_confuse():
+	message('Left-click an enemy to confuse it, or right-click to cancel.', colours.light_cyan)
+	monster = target_monster(CONFUSE_RANGE)
+	if monster is None:
+		message('Cancelled')
+		return 'cancelled'
+	
+	old_ai = monster.ai
+	monster.ai = ConfusedMonster(old_ai)
+	monster.ai.owner = monster
+	message('The eyes of the ' + monster.name + ' look vacant, as he starts to ' +
+			'stumble around!', colours.light_green)
+
+def cast_fireball():
+	message('Left-click a target tile for the fireball, or right-click to cancel.', colours.light_cyan)
+	(x, y) = target_tile()
+	if x is None:
+		message('Cancelled')
+		return 'cancelled'
+	message('The fireball explodes, burning everything within ' + str(FIREBALL_RADIUS) + ' tiles!', colours.orange)
+ 
+	for obj in objects:  #damage every fighter in range, including the player
+		if obj.distance(x, y) <= FIREBALL_RADIUS and obj.fighter:
+			message('The ' + obj.name + ' gets burned for ' + str(FIREBALL_DAMAGE) + ' hit points.', colours.orange)
+			obj.fighter.take_damage(FIREBALL_DAMAGE)
+
+def save_game():
+	with shelve.open('savegame', 'n') as savefile:
+		savefile['my_map'] = my_map
+		savefile['objects'] = objects
+		savefile['player_index'] = objects.index(player)  #index of player in objects list
+		savefile['inventory'] = inventory
+		savefile['game_msgs'] = game_msgs
+		savefile['game_state'] = game_state
+		savefile.close()
+
+def load_game():
+	global my_map, objects, player, inventory, game_msgs, game_state
+ 
+	with shelve.open('savegame', 'r') as savefile:
+		my_map = savefile['my_map']
+		objects = savefile['objects']
+		player = objects[savefile['player_index']]  #get index of player in objects list and access it
+		inventory = savefile['inventory']
+		game_msgs = savefile['game_msgs']
+		game_state = savefile['game_state']
+
 # ----------------------------------------------------------------------
 # Initialisation
 # ----------------------------------------------------------------------
 
+def new_game():
+	global player, inventory, game_msgs, game_state
+	
+	# Create the player object
+	fighter_component = Fighter(hp=30, defense=2, power=5, death_function=player_death)
+	player = GameObject(0, 0, '@', 'player', colours.white, blocks=True, fighter=fighter_component)
+	
+	# Generate map
+	make_map()
+	
+	game_state = 'playing'
+	inventory = []
+	
+	game_msgs = []
+	
+	message('Welcome stranger! Prepare to perish in... THE ABYSS!', colours.red)
+	
+def play_game():
+	global mouse_coord, fov_recompute
+	
+	player_action = None
+	mouse_coord = (0, 0)
+	fov_recompute = True
+	con.clear()
+	
+	while not tdl.event.is_window_closed():
+		# draw all objects in objects
+		render_all()	
+		tdl.flush()
+		
+		# Clear Previously occupied space
+		for obj in objects: obj.clear()
+		
+		# Handle Keys
+		player_action = handle_keys()
+		if player_action == 'exit': break
+		
+		if game_state == 'playing' and player_action != 'didnt-take-turn':
+			for obj in objects:
+				if obj.ai:
+					obj.ai.take_turn()
+
 tdl.set_font('arial10x10.png', greyscale=True, altLayout=True)
 root = tdl.init(SCREEN_WIDTH, SCREEN_HEIGHT, title="Roguelike", fullscreen=False)
 con = tdl.Console(SCREEN_WIDTH, SCREEN_HEIGHT)
-
-# Create the player object
-fighter_component = Fighter(hp=30, defense=2, power=5, death_function=player_death)
-player = GameObject(0, 0, '@', 'player', colours.white, blocks=True, fighter=fighter_component)
-
-objects = [player]
-game_msgs = []
-
-# Generate map
-make_map()
-fov_recompute = True
-
-game_state = 'playing'
-player_action = None
-
 panel = tdl.Console(SCREEN_WIDTH, PANEL_HEIGHT)
 
-message('Welcome stranger! Prepare to perish in... THE ABYSS!', colours.red)
+main_menu()
 
-mouse_coord = (0, 0)
-
-while not tdl.event.is_window_closed():
-	# draw all objects in objects
-	render_all()	
-	tdl.flush()
-	
-	# Clear Previously occupied space
-	for obj in objects: obj.clear()
-	
-	# Handle Keys
-	player_action = handle_keys()
-	if player_action == 'exit': break
-	
-	if game_state == 'playing' and player_action != 'didnt-take-turn':
-		for obj in objects:
-			if obj.ai:
-				obj.ai.take_turn()
 	
 	
 	
