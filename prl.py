@@ -39,6 +39,7 @@ LIGHTNING_RANGE		= 5
 LIGHTNING_DAMAGE	= 20
 CONFUSE_RANGE		= 8
 CONFUSE_NUM_TURNS	= 10
+FIREBALL_RADIUS     = 3
 
 CLASSIC_TILES		= False		# Classic Tiles is not fully implemented yet
 
@@ -214,7 +215,7 @@ class ConfusedMonster:
 			self.owner.move(randint(-1, 1), randint(-1, 1))
 			self.num_turns -= 1
 		else: # Restore old AI
-			self.owner.ai = self.old.ai
+			self.owner.ai = self.oldai
 			message('The ' + self.owner.name + ' is no longer confused!', colours.red)
 
 def is_blocked(x, y):
